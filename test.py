@@ -89,7 +89,7 @@ print("Total nuclei: ", total_nuclei, flush = True)
 
 covariates_df = test_functions.process_cov_files(condition_params["covariates_file"], nuclei_names_list)
 
-
+"""
 
 gene_maps = [test_functions.build_gene_index_map(file, shared_genes) for file in condition_params["data_file"]]
 print("Shared genes: ", len(shared_genes), flush = True)
@@ -121,11 +121,11 @@ adata.obs_names = nuclei_names_list           # rows = nuclei
 adata.var_names = variable_gene_names         # columns = HVGs
 
 
-
+"""
 
 output_dir = condition_params["output_dir"][0]
 out_path = os.path.join(output_dir, "sc_autism.h5ad")
-adata.write(out_path) # This line needs to be commented out
+#adata.write(out_path) # This line needs to be commented out
 
 
 
