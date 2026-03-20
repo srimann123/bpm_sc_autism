@@ -143,6 +143,25 @@ def parse_conditions(conditions_row):
     })
     return condition_params
 
+def clear_graph_and_cluster_state(adata):
+    for k in ["connectivities", "distances"]:
+        if k in adata.obsp:
+            del adata.obsp[k]
+
+    if "neighbors" in adata.uns:
+        del adata.uns["neighbors"]
+
+    for k in ["X_pca", "X_umap", "X_tsne"]:
+        if k in adata.obsm:
+            del adata.obsm[k]
+
+    for k in ["leiden", "louvain"]:
+        if k in adata.obs:
+            del adata.obs[k]
+
+    return adata
+
+
 def run_pca_and_neighbors(adata, condition_params):
     """
     Run PCA and kNN graph construction on GPU using RAPIDS.
@@ -595,6 +614,7 @@ def run_before_after_embeddings(
 
     print(f"Dropping {len(drop_cells)} outlier nuclei...")
     adata = adata[~adata.obs_names.isin(drop_cells)].copy()
+    adata = clear_graph_and_cluster_state(adata)
 
     # ============================
     # 3) AFTER OUTLIER REMOVAL
