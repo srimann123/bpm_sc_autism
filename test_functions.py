@@ -234,13 +234,13 @@ def run_clustering(adata, condition_params):
     resolution = condition_params["resolution"]
     seed = condition_params["random_state"]
 
-    rsc.tl.leiden(
+    sc.tl.leiden(
         adata,
         resolution=resolution,
         random_state=seed
     )
 
-    rsc.tl.louvain(
+    sc.tl.louvain(
         adata,
         resolution=resolution
     )
