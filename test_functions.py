@@ -240,7 +240,7 @@ def run_clustering(adata, condition_params):
         random_state=seed
     )
 
-    sc.tl.louvain(
+    rsc.tl.louvain(
         adata,
         resolution=resolution
     )
