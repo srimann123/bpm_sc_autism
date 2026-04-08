@@ -1,28 +1,23 @@
 
 # GPU-Accelerated Single Cell Analysis Pipeline
-## Memory-Efficient HVG Selection and Clustering for 1M+ Cells
+## Memory‑Efficient HVG Selection and Clustering for 1M+ Cells
 
 ---
 
 # Overview
 
-This pipeline performs **GPU-accelerated single-cell analysis** designed to scale efficiently to **1M+ nuclei** while minimizing:
+This pipeline performs **GPU‑accelerated single‑cell analysis** designed to scale to **>1 million nuclei** while minimizing memory usage and runtime.  
+The goal is to cluster nuclei by cell type using **highly variable genes (HVGs)**.
 
-- memory usage
-- execution time
-- intermediate storage
+The workflow consists of two stages:
 
-The goal of the pipeline is to **cluster nuclei by cell type** using **highly variable genes (HVGs)**.
+**Stage 1 — HVG Identification**  
+Memory‑efficient batched computation of highly variable genes.
 
-The workflow consists of two major stages:
+**Stage 2 — Clustering**  
+PCA → neighbor graph → Leiden/Louvain clustering → UMAP/tSNE visualization.
 
-### Stage 1 — HVG Identification
-Identify highly variable genes using **memory-efficient batched processing**.
-
-### Stage 2 — Clustering
-Cluster nuclei using only the HVG matrix.
-
-The output of Stage 1 is an **AnnData object containing nuclei × HVGs**, which is used as the input for Stage 2.
+The output of Stage 1 is an **AnnData object (nuclei × HVGs)** which is used for clustering.
 
 ---
 
@@ -30,115 +25,133 @@ The output of Stage 1 is an **AnnData object containing nuclei × HVGs**, which 
 
 ```
 Input HDF5 (CSR genes × nuclei)
-            │
-            ▼
+        │
+        ▼
 Shared Gene Intersection
-            │
-            ▼
+        │
+        ▼
 Batch HVG Selection
- ├── Remove low expression genes
- ├── Normalize + log1p
- ├── Residualize covariates
- └── Compute dispersion
-            │
-            ▼
-Select HVGs
-            │
-            ▼
+        │
+        ▼
 Build HVG Matrix (HDF5 splicing)
-            │
-            ▼
+        │
+        ▼
 Transpose → nuclei × genes
-            │
-            ▼
-AnnData Object
-            │
-            ▼
+        │
+        ▼
+AnnData
+        │
+        ▼
 PCA (GPU)
-            │
-            ▼
+        │
+        ▼
 Neighbor Graph
-            │
-            ▼
+        │
+        ▼
 Leiden / Louvain
-            │
-            ▼
+        │
+        ▼
 UMAP / tSNE
-            │
-            ▼
-MAD Outlier Detection
-            │
-            ▼
-Remove Outliers
-            │
-            ▼
-Re-run Clustering
-            │
-            ▼
-Final Outputs
+        │
+        ▼
+MAD Outlier Removal
+        │
+        ▼
+Re‑cluster
+        │
+        ▼
+Outputs
 ```
 
 ---
 
-# Architecture
+# Running the Pipeline
 
-The pipeline consists of **two main Python files**:
+## Step 1 — Create `conditions.csv`
 
-### Driver Script
-Responsible for:
+Each row represents one run.
 
-- reading conditions.csv
-- selecting run parameters
-- orchestrating HVG selection
-- running clustering
-- saving outputs
+Example:
 
-### Function Library
-
-Contains:
-
-- HVG selection functions
-- batching logic
-- sparse matrix construction
-- clustering utilities
-- plotting
-- QC metrics
-- outlier detection
+```csv
+data_file,covariates_file,n_variableGenes,n_pca_components,resolution,n_neighbors,batch_size
+dataset.h5,covariates.csv,3000,50,1.0,30,1000
+```
 
 ---
 
-# Input Requirements
+## Step 2 — Submit Array Job
 
-Input HDF5 matrices must be stored as:
+```bash
+sbatch submit_array.sh conditions.csv
+```
 
-CSR sparse format  
-genes × nuclei  
-
-This format is required because:
-
-- CSR enables fast row access
-- genes are processed in batches
-- improves HDF5 slicing performance
+Each row in `conditions.csv` launches one independent run.
 
 ---
 
-# Multi-Dataset Integration
+# Job Execution Workflow
 
-Multiple single-cell datasets can be integrated in a single run.
+```
+conditions.csv
+     │
+     ▼
+submit_array.sh
+     │
+     ▼
+SLURM array jobs
+     │
+     ▼
+run_array.sh
+     │
+     ▼
+python test.py conditions.csv $SLURM_ARRAY_TASK_ID
+     │
+     ▼
+select row
+     │
+     ▼
+run pipeline
+     │
+     ▼
+output_dir/run_hash/
+```
 
-The pipeline:
+### Row Mapping
 
-1. Finds shared genes across datasets
-2. Aligns gene indices
-3. Streams batches from each dataset
-4. Concatenates nuclei
-5. Computes HVGs jointly
+SLURM uses 1‑based indexing:
 
-This enables:
+```
+job 1 → row 1
+job 2 → row 2
+job 3 → row 3
+```
 
-- multi-sample clustering
-- dataset integration
-- batch-aware analysis
+---
+
+# conditions.csv Parameters
+
+## Core Analysis Parameters
+
+| Parameter | Description | Recommended |
+|-----------|-------------|-------------|
+n_variableGenes | number of HVGs | 2000–5000 |
+n_pca_components | PCA dimensions | 30–100 |
+n_neighbors | kNN graph size | 15–50 |
+resolution | Leiden resolution | 0.4–1.5 |
+batch_size | gene batch size | 500–5000 |
+exp_thresh | low expression cutoff | 0.001–0.01 |
+mad_thres | outlier MAD threshold | 3–5 |
+
+## UMAP / tSNE Parameters
+
+| Parameter | Description | Recommended |
+|-----------|-------------|-------------|
+perplex | tSNE perplexity | 30–200 |
+learning_rate | tSNE learning rate | 200–2000 |
+early_exagg | tSNE exaggeration | 12–24 |
+min_dist | UMAP min distance | 0.1–0.5 |
+spread | UMAP spread | 1–2 |
 
 ---
 
@@ -146,9 +159,8 @@ This enables:
 
 | Stage | Format | Shape | Device |
 |------|-------|------|------|
-Raw HDF5 | CSR | genes × nuclei | disk |
-Gene batch | CSR | batch × nuclei | GPU |
-Residualized batch | dense | batch × nuclei | GPU |
+Input | CSR | genes × nuclei | disk |
+Batch | CSR | batch × nuclei | GPU |
 HVG matrix | CSR | genes × nuclei | GPU |
 Transposed | CSR | nuclei × genes | GPU |
 AnnData | CSR | nuclei × genes | CPU |
@@ -159,73 +171,43 @@ Neighbors | graph | nuclei × k | GPU |
 
 # Stage 1 — HVG Selection
 
-HVG selection is performed **in gene batches** using HDF5 splicing.
+Genes are processed in batches using HDF5 splicing:
 
-This ensures only a subset of genes is in memory at any time.
+1. load gene batch
+2. remove low expression genes
+3. normalize + log1p
+4. residualize covariates
+5. compute variance/dispersion
+6. select HVGs
 
-For each batch:
-
-1. Load gene batch from HDF5
-2. Remove low expression genes
-3. Normalize expression
-4. Log1p transform
-5. Residualize covariates
-6. Compute mean and variance
-7. Compute dispersion
-8. Select HVGs
+This avoids loading the full matrix into memory.
 
 ---
 
-# HVG Algorithm (Technical)
+# HVG Algorithm
 
 For each gene:
 
 Mean:
 
-μ_g = mean(expression)
+μ = mean(expression)
 
 Variance:
 
-σ²_g = var(expression)
+σ² = var(expression)
 
 Dispersion:
 
-d_g = σ²_g / μ_g
+σ² / μ
 
-Genes are binned by mean expression.
-
-Within each bin:
-
-Normalized dispersion:
-
-d_norm = (d_g − median_bin) / MAD_bin
-
+Genes are binned by mean expression and normalized using MAD within bins.  
 Top N genes are selected.
 
-Optional filtering:
+Optional filters:
 
 - mitochondrial genes
 - sex chromosome genes
-- user-defined exclusions
-
----
-
-# HDF5 Splicing Design
-
-The HVG matrix is constructed using **HDF5 splicing**.
-
-This means:
-
-- no intermediate matrix stored
-- genes streamed directly from disk
-- no memory traces from prior steps
-- scalable to millions of cells
-
-This design is critical for:
-
-- memory efficiency
-- GPU compatibility
-- large dataset support
+- user exclusions
 
 ---
 
@@ -233,688 +215,98 @@ This design is critical for:
 
 Input:
 
-CSR  
-genes × nuclei
+CSR (genes × nuclei)
 
-During HVG construction:
+After HVG construction:
 
-CSR  
-genes × nuclei
+CSR (genes × nuclei)
 
-After construction:
+Transpose:
 
-Transpose → CSR nuclei × genes
+CSR (nuclei × genes)
 
-This is required because:
+This format is required for:
 
-AnnData expects:
-
-cells × genes
-
-CSR format is retained to support RAPIDS GPU operations.
+- AnnData
+- RAPIDS GPU clustering
 
 ---
 
 # Stage 2 — Clustering
 
-Stage 2 operates on the HVG-only AnnData matrix.
-
-Pipeline:
+Performed using RAPIDS:
 
 1. PCA (GPU)
-2. Compute neighbor graph
+2. neighbor graph
 3. Leiden clustering
 4. Louvain clustering
-5. UMAP embedding
-6. tSNE embedding
+5. UMAP
+6. tSNE
 
-Leiden is recommended for single-cell analyses.
-
----
-
-# Outlier Detection
-
-Outliers are detected using **MAD-based deviation** within clusters.
-
-Procedure:
-
-1. Compute cluster center
-2. Compute cell distance
-3. Compute MAD
-4. Flag outliers
-5. Remove outliers
-
-After removal, clustering is re-run.
-
-Two complete runs are produced:
-
-Run 1 — Original clustering  
-Run 2 — Outliers removed  
-
----
-
-# conditions.csv Interface
-
-Each row represents a standalone run.
-
-Parameters include:
-
-| Parameter | Description |
-|----------|-------------|
-data_file | input HDF5 datasets |
-covariates_file | covariate matrix |
-n_variableGenes | number of HVGs |
-exp_thresh | low expression threshold |
-batch_size | genes per batch |
-n_neighbors | neighbor graph size |
-resolution | clustering resolution |
-mad_thres | outlier threshold |
-random_state | reproducibility seed |
-
----
-
-# Parallel Execution
-
-The pipeline supports SLURM array jobs.
-
-Execution flow:
-
-conditions.csv  
-→ submit_array.sh  
-→ run_array.sh  
-→ main python script  
-
-Each row in conditions.csv produces:
-
-- one independent run
-- one output directory
-
-A unique hash is generated for each run.
-
----
-
-# Optional: Skip HVG Selection
-
-Users may provide a precomputed HDF5 / h5ad file.
-
-This allows:
-
-- testing clustering parameters
-- skipping HVG recomputation
-- faster iteration
-
----
-
-# Outputs
-
-For each run:
-
-UMAP plots:
-
-- Leiden
-- Louvain
-
-tSNE plots:
-
-- Leiden
-- Louvain
-
-Both before and after outlier removal.
-
-Additional files:
-
-- QC metrics
-- cluster assignments
-- outlier reports
-- run hash metadata
-
----
-
-# Memory Efficiency Design
-
-Without batching:
-
-1M cells × 30k genes → extremely large
-
-With batching:
-
-only subset of genes loaded
-
-Benefits:
-
-- low RAM usage
-- low GPU memory
-- scalable to large datasets
-- no intermediate matrices
-
----
-
-# Developer Notes
-
-### CSR vs CSC
-
-CSR used for fast gene slicing.
-
-CSC not used due to slow row access.
-
-### GPU Sparse Matrices
-
-Pipeline uses:
-
-- CuPy CSR
-- GPU PCA
-- GPU clustering
-
-### AnnData Conversion
-
-Matrix transposed to:
-
-cells × genes
-
-before creating AnnData.
-
-### Covariate Residualization
-
-Performed using QR decomposition on GPU.
-
-Removes:
-
-- batch effects
-- covariate bias
-- sample effects
-
-### Implementation Inspiration
-
-Stage 1 HVG batching functions are inspired by NVIDIA GPU
-single-cell analysis workflows but adapted for:
-
-- HDF5 splicing
-- multi-dataset integration
-- CSR sparse operations
-
----
-
-# Summary
-
-This pipeline enables:
-
-- GPU accelerated single-cell clustering
-- memory efficient HVG selection
-- 1M+ cell scalability
-- multi dataset integration
-- robust outlier removal
-
-
----
-
-# Running the Pipeline
-
-## Step 1 — Create `conditions.csv`
-
-Each row in `conditions.csv` represents **one independent run**.
-
-Example:
-
-```csv
-data_file,covariates_file,n_variableGenes,n_pca_components,resolution,n_neighbors,batch_size
-dataset1.h5,covariates.csv,3000,50,1.0,30,1000
-```
-
-You may include multiple rows to launch multiple runs.
-
----
-
-## Step 2 — Submit SLURM Array
-
-Run:
-
-```bash
-sbatch submit_array.sh conditions.csv
-```
-
-This will:
-
-1. Count rows in `conditions.csv`
-2. Launch SLURM array jobs
-3. Each job runs one row
-
----
-
-## Step 3 — Job Execution Flow
-
-```
-conditions.csv
-    ↓
-submit_array.sh
-    ↓
-run_array.sh
-    ↓
-python main_script.py conditions.csv $SLURM_ARRAY_TASK_ID
-```
-
-The Python script selects the row corresponding to:
-
-```
-SLURM_ARRAY_TASK_ID
-```
-
-and runs that configuration.
-
----
-
-# conditions.csv Parameter Guide
-
-Below are the main parameters and recommended values.
-
----
-
-## Data Inputs
-
-### data_file
-Input HDF5 datasets.
-
-Supports:
-
-- single dataset
-- multiple datasets (semicolon separated)
-
-Example:
-
-```
-dataset1.h5
-```
-
----
-
-### covariates_file
-CSV containing covariates for residualization.
-
-Examples:
-
-- batch
-- sex
-- age
-- sample
-
----
-
-# HVG Parameters
-
-### n_variableGenes
-
-Number of highly variable genes selected.
-
-Recommended:
-
-```
-2000 — 5000
-```
-
-Typical:
-
-```
-3000
-```
-
----
-
-### exp_thresh
-
-Minimum average expression threshold.
-
-Recommended:
-
-```
-0.001 — 0.01
-```
-
-Default:
-
-```
-0.005
-```
-
----
-
-### batch_size
-
-Number of genes processed at once.
-
-Recommended:
-
-```
-500 — 5000
-```
-
-Large GPU:
-
-```
-2000 — 5000
-```
-
----
-
-### hvg_mad_thresh
-
-MAD cutoff for HVG dispersion.
-
-Recommended:
-
-```
-2.5 — 4
-```
-
-Default:
-
-```
-3
-```
-
----
-
-# PCA Parameters
-
-### n_pca_components
-
-Recommended:
-
-```
-30 — 100
-```
-
-Typical:
-
-```
-50
-```
-
----
-
-# Clustering Parameters
-
-### n_neighbors
-
-Recommended:
-
-```
-15 — 50
-```
-
-Typical:
-
-```
-30
-```
-
----
-
-### resolution
-
-Leiden resolution.
-
-Recommended:
-
-```
-0.4 — 1.5
-```
-
-Typical:
-
-```
-1.0
-```
-
----
-
-# UMAP Parameters
-
-### min_dist
-
-Recommended:
-
-```
-0.1 — 0.5
-```
-
-### spread
-
-Recommended:
-
-```
-1.0 — 2.0
-```
-
----
-
-# tSNE Parameters
-
-### perplex
-
-Recommended:
-
-```
-30 — 200
-```
-
-Large dataset:
-
-```
-100 — 200
-```
-
----
-
-### learning_rate
-
-Recommended:
-
-```
-200 — 2000
-```
-
----
-
-### early_exagg
-
-Recommended:
-
-```
-12 — 24
-```
+Leiden is recommended.
 
 ---
 
 # Outlier Removal
 
-### mad_thres
+MAD‑based outlier detection is performed within clusters.
 
-MAD threshold.
+Two runs are produced:
 
-Recommended:
-
-```
-3 — 5
-```
+1. original clustering
+2. outliers removed clustering
 
 ---
 
-# Reproducibility
+# Multi‑Dataset Integration
 
-### random_state
+Multiple HDF5 datasets may be provided.
 
-Example:
+Pipeline:
 
-```
-42
-```
-
----
-
-# Example conditions.csv
-
-```csv
-data_file,covariates_file,n_variableGenes,n_pca_components,resolution,n_neighbors,batch_size
-autism.h5,covariates.csv,3000,50,1.0,30,1000
-control.h5,covariates.csv,3000,50,0.8,30,1000
-```
+1. find shared genes
+2. align datasets
+3. stream batches
+4. concatenate nuclei
+5. cluster jointly
 
 ---
 
-# Recommended Starting Parameters (1M Cells)
+# Memory Efficiency Design
 
-```
-n_variableGenes = 3000
-n_pca_components = 50
-n_neighbors = 30
-resolution = 1.0
-batch_size = 1000
-exp_thresh = 0.005
-mad_thres = 3
-perplex = 100
-```
+Batch processing ensures:
 
-
+- low RAM usage
+- low GPU memory
+- no intermediate matrices
+- scalability to millions of cells
 
 ---
 
-# Job Execution Workflow
+# Outputs
 
-The pipeline is executed using SLURM array jobs, where each row in `conditions.csv`
-corresponds to one independent run.
+Each run produces:
 
-## Workflow Diagram
-
-```
-conditions.csv
-     │
-     ▼
-submit_array.sh
-     │
-     ▼
-SLURM Array Jobs (1 per row)
-     │
-     ▼
-run_array.sh
-     │
-     ▼
-python test.py conditions.csv $SLURM_ARRAY_TASK_ID
-     │
-     ▼
-Select row from conditions.csv
-     │
-     ▼
-Run pipeline
-     │
-     ▼
-output_dir/run_hash/
-```
-
----
-
-## Script Responsibilities
-
-### submit_array.sh
-
-Responsible for:
-
-- reading `conditions.csv`
-- counting rows
-- launching SLURM array
-- setting array size
-
-Example behavior:
-
-```
-5 rows in conditions.csv → 5 SLURM jobs
-```
-
----
-
-### run_array.sh
-
-Responsible for:
-
-- receiving SLURM_ARRAY_TASK_ID
-- forwarding arguments
-- launching Python script
-
-Typically runs:
-
-```
-python test.py conditions.csv $SLURM_ARRAY_TASK_ID
-```
-
----
-
-### Main Python Script
-
-Responsible for:
-
-- loading conditions.csv
-- selecting correct row
-- parsing parameters
-- running pipeline
-- writing outputs
-
----
-
-## Row Mapping
-
-SLURM uses **1‑based indexing**.
-
-```
-SLURM_ARRAY_TASK_ID = row number in conditions.csv
-```
-
-Example:
-
-```
-Array job 1 → row 1
-Array job 2 → row 2
-Array job 3 → row 3
-```
-
----
-
-## Example Run
-
-If `conditions.csv` contains 4 rows:
-
-```
-sbatch submit_array.sh conditions.csv
-```
-
-This launches:
-
-```
-job 1 → row 1
-job 2 → row 2
-job 3 → row 3
-job 4 → row 4
-```
-
-Each job runs independently.
-
----
-
-## Output Structure
-
-Each run produces a separate output directory:
-
-```
-output_dir/
-   run_hash_1/
-   run_hash_2/
-   run_hash_3/
-```
-
-Each directory contains:
-
-- clustering plots
-- UMAP/tSNE
-- QC files
+- UMAP plots (Leiden + Louvain)
+- tSNE plots (Leiden + Louvain)
 - cluster assignments
-- logs
+- QC metrics
+- outlier reports
 
-The run hash uniquely identifies parameter combinations.
+---
+
+# Developer Notes
+
+### Sparse format
+
+CSR used for fast gene batching and RAPIDS compatibility.
+
+### Covariate residualization
+
+Performed using GPU QR decomposition.
+
+### Implementation
+
+HVG batching inspired by NVIDIA GPU single‑cell workflows with
+custom HDF5 splicing and multi‑dataset integration.
 
