@@ -32,6 +32,15 @@ start = time.time()
 import pandas as pd
 print("pandas import: ", time.time() - start, flush=True)
 
+import cudf, cuml, cugraph
+import rapids_singlecell as rsc
+
+print("cudf:", cudf.__version__, flush=True)
+print("cuml:", cuml.__version__, flush=True)
+print("cugraph:", cugraph.__version__, flush=True)
+print("rapids-singlecell:", rsc.__version__, flush=True)
+
+
 #start = time.time()
 #from cupyx.scipy.sparse import csr_matrix
 #print("cupyx.scipy.sparse import: ", time.time() - start, flush=True)
@@ -151,116 +160,4 @@ adata_final, results_list = test_functions.run_before_after_embeddings(
     mad_thres=condition_params.get("mad_thres")
 )
 
-
-
-
-
-
-"""
-"""
-#---------------------------------------------------
-
-# adata = AnnData(X=partial_sparse_array)
-# rapids_singlecell.pp.pca
-# rapids_singlecell.tl.louvain
-
-"""
-
-def preprocess_in_batches(input_file, min_genes_per_cell=200, max_genes_per_cell=6000, min_cells_per_gene=1,
-                          target_sum=1e4, n_top_genes=4000):
-    _data = '/X/data'
-    _index = '/X/indices'  # columns in which data elements are found in
-    _indptr = '/X/indptr'  # indices in data that represent where a new row starts (index 0 in indptor stored the position in data that corresonds to row 0)
-    _nuclei = '/var/_index'  # column names
-    _genes = '/obs/_index'  # row names
-    gene_batch_size = 2000
-    batches = []
-    mean = []
-    mean_sq = []
-
-    input_file = "krasnow_transposed.h5ad"
-
-    with h5py.File(input_file, 'r') as h5f:
-        n_genes = len(h5f[_genes])
-        n_nuclei = len(h5f[_nuclei])
-        indptrs = h5f[_indptr][:]
-        genes = h5f[_genes][:].astype(str)   
-
-    print("n_genes: ", n_genes)
-    print("n_nuclei: ", n_nuclei)
-
-    print("Calculating highly variable genes.")
-    for batch_start in range(0, n_genes,
-                             gene_batch_size):  # LETS ASSUME THAT INCOMING DATA IN H5F has genes as rows and nuclei as columns
-        # Get batch indices
-        with h5py.File(input_file, 'r') as h5f:
-            actual_batch_size = min(gene_batch_size, n_genes - batch_start)
-            batch_end = batch_start + actual_batch_size
-            start_ptr = indptrs[batch_start]
-            end_ptr = indptrs[batch_end]
-            # Read data and index of batch from hdf5
-            sub_data = cp.array(h5f[_data][start_ptr:end_ptr])
-            sub_indices = cp.array(h5f[_index][start_ptr:end_ptr])
-            # recompute the row pointer for the partial dataset
-            sub_indptrs = cp.array(indptrs[batch_start:(batch_end + 1)])
-            sub_indptrs = sub_indptrs - sub_indptrs[0]
-            # Reconstruct partial sparse array
-            partial_sparse_array = cp.sparse.csr_matrix((sub_data, sub_indices, sub_indptrs),
-                                                        shape=(batch_end - batch_start, n_nuclei))  #
-            print(partial_sparse_array.shape)
-
-        # rsc.pp.regress_out(adata, keys=["n_counts", "percent_MT"], inplace = True)
-
-        partial_mean = partial_sparse_array.sum(axis=1) / partial_sparse_array.shape[1]  # Gives average expression of a gene per nuclei
-        mean.append(partial_mean)
-
-        # Calculate sq sum per gene - can batch across genes
-        partial_sparse_array = partial_sparse_array.multiply(partial_sparse_array)
-        partial_mean_sq = partial_sparse_array.sum(axis=1) / partial_sparse_array.shape[1]
-        mean_sq.append(partial_mean_sq)
-
-    mean_lens = [len(i) for i in mean]
-    print(mean_lens)
-
-    mean = cp.concatenate(mean).ravel()
-    mean_sq = cp.concatenate(mean_sq).ravel()
-    variable_genes = _cellranger_hvg(mean, mean_sq, n_genes, n_nuclei, n_top_genes)
-    
-    
-    row_indices = np.where(variable_genes)[0]
-    batches = []
-
-    for row_index in row_indices:
-        row_start = row_index
-        row_end = row_index + 1
-        start_ptr = indptrs[row_start]
-        end_ptr = indptrs[row_end]  # We will be extracting one row at a time
-        with h5py.File(input_file, 'r') as h5f:
-            sub_data = cp.array(h5f[_data][start_ptr:end_ptr])
-            sub_indices = cp.array(h5f[_index][start_ptr:end_ptr])
-            sub_indptrs = cp.array(indptrs[row_start:(row_end + 1)])
-            sub_indptrs = sub_indptrs - sub_indptrs[0]
-
-            partial_sparse_array = cp.sparse.csr_matrix((sub_data, sub_indices, sub_indptrs),
-                                                        shape=(row_end - row_start, n_nuclei))
-            batches.append(partial_sparse_array)
-
-    sparse_gpu_array = cp.sparse.vstack([partial_sparse_array for partial_sparse_array in batches])
-    genes_filtered = [genes[row_index] for row_index in row_indices]  # Unsure if this line works
-    genes_filtered = sorted(genes_filtered)
-    #genes_filtered = [gene.decode('utf-8') for gene in genes_filtered]
-
-    print(sparse_gpu_array.shape)
-    print(cp.min(sparse_gpu_array.data))
-    print(sparse_gpu_array.nnz)
-    print(sparse_gpu_array.nnz)
-
-    print(len(genes_filtered))
-    print(genes_filtered[0:5])
-    
-    f = open("hvg_sr.txt", "w")
-    f.write(','.join(genes_filtered)[:-1])
-    f.close()
-
-    return sparse_gpu_array, genes_filtered
 """

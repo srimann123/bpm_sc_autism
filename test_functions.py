@@ -69,52 +69,6 @@ def set_global_seeds(seed: int):
 
 
 
-def get_h5_files(file_dirs):
-    output_files = []
-
-    for file_dir in file_dirs:
-        cell_ids_path = os.path.join(file_dir, "cell_ids.txt")   # nuclei (columns)
-        gene_ids_path = os.path.join(file_dir, "gene_ids.txt")   # genes (rows)
-        mtx_path      = os.path.join(file_dir, "count_matrix.mtx")
-        output_file   = os.path.join(file_dir, "count_matrix.h5")
-
-        if os.path.exists(output_file):
-            output_files.append(output_file)
-            continue
-
-        cell_ids = pd.read_csv(cell_ids_path, header=None, sep=r"\s+", dtype=str)[0].to_numpy()
-        gene_ids = pd.read_csv(gene_ids_path, header=None, sep=r"\s+", dtype=str)[0].to_numpy()
-
-        X = mmread(mtx_path).tocsr()  # genes x nuclei
-
-        # sanity check: genes x nuclei
-        if X.shape != (len(gene_ids), len(cell_ids)):
-            raise ValueError(
-                f"Shape mismatch (expected genes x nuclei): "
-                f"X={X.shape}, genes={len(gene_ids)}, nuclei={len(cell_ids)}"
-            )
-
-        with h5py.File(output_file, "w") as h5f:
-            X_grp = h5f.create_group("X")
-            X_grp.create_dataset("data",    data=X.data,    compression="gzip")
-            X_grp.create_dataset("indices", data=X.indices, compression="gzip")
-            X_grp.create_dataset("indptr",  data=X.indptr,  compression="gzip")
-            X_grp.attrs["shape"] = X.shape
-
-            # genes = rows, nuclei = columns
-            h5f.create_dataset("obs/_index", data=np.asarray(gene_ids, dtype="S"))
-            h5f.create_dataset("var/_index", data=np.asarray(cell_ids, dtype="S"))
-
-            h5f.attrs["orientation"] = "genes_x_nuclei"
-            h5f.attrs["sparse_format"] = "csr"
-            h5f.attrs["source_format"] = "mtx"
-
-        output_files.append(output_file)
-
-    return output_files
-
-
-
 def parse_conditions(conditions_row):
     condition_params = conditions_row.to_dict()
     # Split semicolon-separated strings into lists
@@ -227,10 +181,12 @@ def run_pca_and_neighbors(adata, condition_params):
     print("fraction diag > 1:", np.mean(diag > 1), flush = True)
 
 
-def run_clustering(adata, condition_params):
+def run_clustering(adata, condition_params, save_dir, beforeOutlier = True):
     """
     Run Leiden and Louvain clustering on GPU.
     """
+    os.makedirs(save_dir, exist_ok=True)
+
     resolution = condition_params["resolution"]
     seed = condition_params["random_state"]
 
@@ -244,6 +200,12 @@ def run_clustering(adata, condition_params):
         adata,
         resolution=resolution
     )
+
+    df = adata.obs['leiden'].reset_index()
+    df.columns = ['nuclei', 'cluster']
+    suffix = "beforeOutlier" if beforeOutlier else "afterOutlier"
+    df.to_csv(os.path.join(save_dir, f"nuclei_cluster_mapping_{suffix}.csv"),index=False)
+
 
     print(f"Leiden clusters: {adata.obs['leiden'].nunique()}", flush = True)
     print(f"Leiden Clustering counts: {adata.obs['leiden'].value_counts()}", flush = True)
@@ -294,42 +256,6 @@ def run_embeddings(adata, condition_params):
         random_state=seed,
         n_jobs=1,  # ensures reproducibility
     )
-
-
-"""
-
-def plot_embeddings(adata, save_dir, file_labels):
-    
-    Plot UMAP and t-SNE colored by Leiden and Louvain.
-    Assumes adata is on CPU (rsc.get.anndata_to_CPU already called).
-    
-    os.makedirs(save_dir, exist_ok=True)
-    sc.set_figure_params(figsize=(6, 5), dpi=300)
-
-    # UMAP - Leiden
-    filename = os.path.join(save_dir, f"umap_leiden_{file_labels['cluster_label']}.png")
-    sc.pl.umap(adata, color="leiden", frameon=False, legend_loc="right margin", show=False)
-    plt.savefig(filename, dpi=600, bbox_inches="tight")
-    plt.close()
-
-    # UMAP - Louvain
-    filename = os.path.join(save_dir, f"umap_louvain_{file_labels['cluster_label']}.png")
-    sc.pl.umap(adata, color="louvain", frameon=False, legend_loc="right margin", show=False)
-    plt.savefig(filename, dpi=600, bbox_inches="tight")
-    plt.close()
-
-    # t-SNE - Leiden
-    filename = os.path.join(save_dir, f"tsne_leiden_{file_labels['cluster_label']}.png")
-    sc.pl.tsne(adata, color="leiden", frameon=False, legend_loc="right margin", show=False)
-    plt.savefig(filename, dpi=600, bbox_inches="tight")
-    plt.close()
-
-    # t-SNE - Louvain
-    filename = os.path.join(save_dir, f"tsne_louvain_{file_labels['cluster_label']}.png")
-    sc.pl.tsne(adata, color="louvain", frameon=False, legend_loc="right margin", show=False)
-    plt.savefig(filename, dpi=600, bbox_inches="tight")
-    plt.close()
-"""
 
 
 def summarize_hvg_variation_gpu_prescaled(
@@ -579,7 +505,7 @@ def run_before_after_embeddings(
     run_pca_and_neighbors(adata, condition_params)
 
     print("\n--- Starting Clustering ---\n", flush = True)
-    run_clustering(adata, condition_params) # Maximize complexity heuristic, iteratively
+    run_clustering(adata, condition_params, save_dir=os.path.join(save_dir, "before_outlier_removal"), beforeOutlier = True) # Maximize complexity heuristic, iteratively
 
     # Embeddings (UMAP + t-SNE)
     print("\n--- Starting Embeddings ---\n", flush = True)
@@ -629,7 +555,7 @@ def run_before_after_embeddings(
 
     # PCA + neighbors + clustering
     run_pca_and_neighbors(adata, condition_params)
-    run_clustering(adata, condition_params)
+    run_clustering(adata, condition_params, save_dir=os.path.join(save_dir, "after_outlier_removal"), beforeOutlier = False)
 
     # Embeddings (UMAP + t-SNE)
     run_embeddings(adata, condition_params)
@@ -650,6 +576,8 @@ def run_before_after_embeddings(
         filename = os.path.join(csv_dir, f"result_{i+1}.csv")
         df.to_csv(filename, index=True)
         print(f"Saved: {filename}")
+
+
 
     cluster_qc_post = compute_cluster_qc(
     adata,
@@ -1316,57 +1244,6 @@ def _cellranger_hvg(
     return df["is_hvg_filtered"].values
 
 
-"""
-def _cellranger_hvg(mean, mean_sq, n_genes, n_nuclei, n_top_genes=4000):  # mean, mean_sq, genes, n_cells, n_top_genes
-    if n_top_genes is None:
-        n_top_genes = n_genes.shape[0] // 10  # n_top_genes = genes.shape[0] // 10
-
-    mean[mean == 0] = 1e-12
-    variance = mean_sq - mean ** 2
-    variance *= n_genes / (n_nuclei - 1)
-    dispersion = variance / mean
-
-    df = pd.DataFrame()
-    # Note - can be replaced with cudf once 'cut' is added in 21.08
-    # df['genes'] = genes.to_array()
-    df['means'] = mean.tolist()
-    df['dispersions'] = dispersion.tolist()
-
-    if n_top_genes > df.shape[0]:
-        n_top_genes = df.shape[0]
-
-    t = cp.unique(mean)
-    print(len(t))
-
-    # Below code assigns a bin for each corresponding value in mean_bin (ex: ((1.3, 2.5]))
-    df['mean_bin'] = pd.cut(
-        df['means'],
-        np.r_[-np.inf, np.percentile(df['means'], np.arange(10, 105, 10)), np.inf],
-    )  # CHANGED np.arange from (10, 105, 5) to (10, 105, 10) increasing % jump and bin width
-
-    # All the Below code Normalize dispersion within bins
-    disp_grouped = df.groupby('mean_bin')['dispersions']
-    disp_median_bin = disp_grouped.median()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        disp_mad_bin = disp_grouped.apply(robust.mad)
-        df['dispersions_norm'] = (
-                                         df['dispersions'].values - disp_median_bin[df['mean_bin'].values].values
-                                 ) / disp_mad_bin[df['mean_bin'].values].values
-
-    # Select Top N HVGs, using normalized dispersion values
-    dispersion_norm = df['dispersions_norm'].values
-    dispersion_norm = dispersion_norm[~np.isnan(dispersion_norm)]
-    dispersion_norm[::-1].sort()
-
-    # Order is preserved: df['disperson_norms'] and variable_genes mask are still in the same order as the original mean and mean_sq list
-    disp_cut_off = dispersion_norm[n_top_genes - 1]
-    variable_genes = np.nan_to_num(df['dispersions_norm'].values) >= disp_cut_off
-    print(sum(variable_genes))  # Correctly outputs 4000, as defined above
-    return variable_genes
-"""
-
-
 def get_shared_genes(all_files, gene_key="/gene_ids", nuclei_key="/cell_ids"):
     """
     Find genes shared across all files (intersection) and collect nuclei IDs.
@@ -1703,45 +1580,3 @@ def build_hvg_matrix(variable_gene_names, datasets, output_dir, gene_maps, total
 
 
 print("TESTING2")
-
-"""
-def remove_lowexp_genes(partial_sparse_array, total_nuclei, thresh): # dataset_files, gene_maps, common_genes, n_nuclei, thresh, data_key="/X/data", indptr_key="/X/indptr"
-
-    gene_sums = {gene: 0.0 for gene in common_genes}
-
-    for file, gene_map in zip(dataset_files, gene_maps):
-        with h5py.File(file, "r") as h5f:
-            indptrs = h5f[indptr_key]
-            data = h5f[data_key]
-            for gene in common_genes:
-                row_idx = gene_map[gene]
-                start = indptrs[row_idx]
-                end = indptrs[row_idx + 1]
-                row_data = cp.array(data[start:end], dtype=cp.float32)
-                gene_sums[gene] += row_data.sum().item()
-
-    filtered_genes = [gene for gene in common_genes if (gene_sums[gene] / n_nuclei) > thresh]
-    return filtered_genes
-
-OR YOU CAN DO THIS INSTEAD:
-
-    filtered_genes = []
-    for gene in common_genes:
-        gene_total_expr = 0.0
-        for file, gene_map in zip(dataset_files, gene_maps):
-            with h5py.File(file, "r") as h5f:
-                indptrs = h5f[indptr_key] # h5f[indptr_key][:] <-- this code ends up loding into memory; in this way, we avoid that
-                data = h5f[data_key] # This code does not load into memory, which is good
-                row_idx = gene_map[gene]
-                
-                start = indptrs[row_idx] # here we are splicing without loading into memory
-                end = indptrs[row_idx + 1] # here we are splicing without loading into memory
-
-                row_data = cp.array(data[start:end], dtype=cp.float32) # here we are splicing without loading into memory
-                gene_total_expr += row_data.sum().item()
-        mean_expr = gene_total_expr / n_nuclei
-        if mean_expr > thresh:
-            filtered_genes.append(gene)
-    return filtered_genes
-
-"""
