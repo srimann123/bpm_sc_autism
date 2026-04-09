@@ -1,5 +1,6 @@
 import time
 import os
+import json
 import math
 import zlib
 import sys
@@ -55,6 +56,9 @@ from scipy.io import mmread
 print("scipy mmread import: ", time.time() - start, flush=True)
 
 from scipy.sparse.csgraph import connected_components
+
+import uuid
+from datetime import datetime
 
 # import cudf  # Only import if you're using DataFrame manipulation specific to cudf, # If you're not using all of cudf, avoid importing it unless needed
 
@@ -983,7 +987,7 @@ def build_cluster_label(condition_params):
         "mad_thres":        condition_params.get("mad_thres"),
         "remove_clusters":  condition_params.get("remove_clusters"),
         "hvg_var_ceiling": condition_params.get("hvg_var_ceiling"),
-        "hvg_mad_thresh": condition_params.get("hvg_mad_thresh")
+        "hvg_mad_thresh": condition_params.get("hvg_mad_thresh"),
     }
 
     def fmt_val(v):
@@ -1020,13 +1024,30 @@ def build_cluster_label(condition_params):
         f"_hvg_mad_thresh{fmt_val(settings['hvg_mad_thresh'])}"
     )
 
+    run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
     return {
         "file_hash": file_hash,
         "file_hash_input": file_hash_input,  # debug aid
         "cov_hash": cov_hash,
         "cov_hash_input": cov_hash_input,    # debug aid
         "cluster_label": cluster_label,
+        "run_id": run_id
     }
+
+def save_run_metadata(save_dir, condition_params, file_labels):
+    """
+    Save run metadata for reproducibility
+    """
+
+    # save condition params (dict)
+    with open(os.path.join(save_dir, "condition_params.json"), "w") as f:
+        json.dump(condition_params, f, indent=2, default=str)
+
+    # save file labels (list)
+    with open(os.path.join(save_dir, "file_labels.json"), "w") as f:
+        json.dump(file_labels, f, indent=2, default=str)
+
 def _cellranger_hvg(
     mean,
     mean_sq,

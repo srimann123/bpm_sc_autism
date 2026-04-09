@@ -138,9 +138,10 @@ out_path = os.path.join(output_dir, "sc_autism.h5ad")
 
 
 
-save_dir = os.path.join(condition_params["output_dir"][0], "plots", file_labels["cluster_label"])
-os.makedirs(save_dir, exist_ok=True)  # Create the folder if it doesn’t exist
+save_dir = os.path.join(condition_params["output_dir"][0], "plots", file_labels["cluster_label"], file_labels["run_id"])
+os.makedirs(save_dir, exist_ok=False)  # Create the folder if it doesn’t exist
 
+test_functions.save_run_metadata(save_dir, condition_params, file_labels)
 
 # 1) Read precomputed matrix (nuclei x HVGs) from H5AD ####### REMOVE THIS BLOCK OF CODE AFTER TESTING
 h5ad_path = condition_params.get("h5ad_file", out_path)
@@ -160,4 +161,3 @@ adata_final, results_list = test_functions.run_before_after_embeddings(
     mad_thres=condition_params.get("mad_thres")
 )
 
-"""
