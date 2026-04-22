@@ -160,4 +160,3 @@ adata_final, results_list = test_functions.run_before_after_embeddings(
     results_list=[],
     mad_thres=condition_params.get("mad_thres")
 )
-

@@ -4,7 +4,6 @@ import json
 import math
 import zlib
 import sys
-import pickle
 
 start = time.time()
 import h5py
@@ -48,7 +47,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import scipy.sparse as sp
 from scipy.sparse import issparse
 import random  # at top with other imports
 from matplotlib.colors import to_hex
@@ -473,102 +471,6 @@ def plot_embeddings(adata, save_dir, file_labels):
     sc.pl.tsne(adata, color="louvain", frameon=False, legend_loc="right margin", show=False)
     save_scanpy_plot(filename)
 
-def validate_post_outlier_adata(adata):
-    required = {
-        "obsm": ["X_pca"],
-        "obsp": ["connectivities", "distances"],
-        "uns": ["neighbors"],
-    }
-
-    for key in required["obsm"]:
-        if key not in adata.obsm:
-            raise KeyError(f"Missing adata.obsm['{key}']")
-
-    for key in required["obsp"]:
-        if key not in adata.obsp:
-            raise KeyError(f"Missing adata.obsp['{key}']")
-
-    for key in required["uns"]:
-        if key not in adata.uns:
-            raise KeyError(f"Missing adata.uns['{key}']")
-
-    print("Validated post-outlier AnnData fields.", flush=True)
-
-def move_graph_fields_to_gpu(adata):
-    """
-    Move relevant fields for RAPIDS clustering/embedding onto GPU.
-    Assumes adata was loaded from disk and may currently be CPU-backed.
-    """
-    # Move main matrix and standard AnnData internals
-    rsc.get.anndata_to_GPU(adata)
-
-    # Ensure PCA embedding is on GPU
-    if "X_pca" in adata.obsm and not isinstance(adata.obsm["X_pca"], cp.ndarray):
-        adata.obsm["X_pca"] = cp.asarray(adata.obsm["X_pca"])
-
-    # Ensure neighbor graph is on GPU CSR
-    if "connectivities" in adata.obsp and not isinstance(
-        adata.obsp["connectivities"], cpx_sparse.csr_matrix
-    ):
-        adata.obsp["connectivities"] = cpx_sparse.csr_matrix(adata.obsp["connectivities"])
-
-    if "distances" in adata.obsp and not isinstance(
-        adata.obsp["distances"], cpx_sparse.csr_matrix
-    ):
-        adata.obsp["distances"] = cpx_sparse.csr_matrix(adata.obsp["distances"])
-
-    return adata
-
-
-def prepare_post_outlier_adata(adata, condition_params, graph_parent_dir):
-    """
-    Handles the post-outlier-removal PCA/neighbors stage.
-
-    condition_params["reuse_saved_neighbors"]:
-      - False:
-          compute PCA + neighbors fresh on GPU, then save the full AnnData
-          snapshot to:
-              graph_parent_dir/post_outlier_with_graph.h5ad
-
-      - "<direct_path_to_h5ad>":
-          load that saved AnnData snapshot and move relevant fields to GPU
-    """
-    reuse_saved_neighbors = condition_params.get("reuse_saved_neighbors", False)
-
-    if reuse_saved_neighbors is False:
-        print("\n--- Computing post-outlier PCA/neighbors fresh on GPU ---\n", flush=True)
-
-        os.makedirs(graph_parent_dir, exist_ok=True)
-
-        rsc.get.anndata_to_GPU(adata)
-        run_pca_and_neighbors(adata, condition_params)
-
-        # Move to CPU before writing .h5ad
-        rsc.get.anndata_to_CPU(adata)
-
-        save_path = os.path.join(graph_parent_dir, "post_outlier_with_graph.h5ad")
-        adata.write_h5ad(save_path)
-
-        print(f"Saved post-outlier AnnData snapshot to: {save_path}", flush=True)
-
-        # Move back to GPU for downstream RAPIDS clustering/embeddings
-        adata = move_graph_fields_to_gpu(adata)
-        return adata
-
-    if not isinstance(reuse_saved_neighbors, str):
-        raise ValueError(
-            'condition_params["reuse_saved_neighbors"] must be either False or a direct path string.'
-        )
-
-    load_path = reuse_saved_neighbors
-    if not os.path.exists(load_path):
-        raise FileNotFoundError(f"Saved post-outlier AnnData snapshot not found: {load_path}")
-
-    print(f"\n--- Loading saved post-outlier AnnData snapshot from: {load_path} ---\n", flush=True)
-
-    adata = sc.read_h5ad(load_path)
-    adata = move_graph_fields_to_gpu(adata)
-    return adata
 
 
 def run_before_after_embeddings(
@@ -581,56 +483,54 @@ def run_before_after_embeddings(
     mad_thres
 ):
     """
-    Runs RAPIDS PCA -> neighbors -> clustering -> embeddings before and after
-    outlier removal, and saves plots before and after.
-
-    condition_params["reuse_saved_neighbors"]:
-      - False:
-          after outlier removal, compute fresh PCA/neighbors and save:
-              save_dir/after_outlier_removal/post_outlier_with_graph.h5ad
-
-      - "<direct_path_to_h5ad>":
-          after outlier removal, load previously saved post-outlier snapshot
-          from that path instead of rebuilding PCA/neighbors
+    Runs RAPIDS PCA → neighbors → clustering → embeddings before and after
+    outlier removal, and saves 4 plots:
+        - umap_before
+        - tsne_before
+        - umap_after
+        - tsne_after
     """
-    seed = condition_params["random_state"]
-    set_global_seeds(seed)
-    print("Set global seeds", flush=True)
 
     # ============================
     # 1) BEFORE OUTLIER REMOVAL
     # ============================
-    print("\n--- Running BEFORE outlier removal ---\n", flush=True)
 
-    before_outlier_dir = os.path.join(save_dir, "before_outlier_removal")
-    os.makedirs(before_outlier_dir, exist_ok=True)
+    seed = condition_params["random_state"]
+    set_global_seeds(seed)
+    print("Set global seeds", flush=True)
 
+    print("\n--- Running BEFORE outlier removal ---\n", flush = True)
+
+    # Move to GPU
     rsc.get.anndata_to_GPU(adata)
+
+    print("\n--- Starting PCA/neighbors ---\n", flush = True)
+    # PCA + neighbors + clustering
     run_pca_and_neighbors(adata, condition_params)
 
-    print("\n--- Starting Clustering BEFORE outlier removal ---\n", flush=True)
-    run_clustering(
-        adata,
-        condition_params,
-        save_dir=before_outlier_dir,
-        beforeOutlier=True
-    )
+    print("\n--- Starting Clustering ---\n", flush = True)
+    run_clustering(adata, condition_params, save_dir=os.path.join(save_dir, "before_outlier_removal"), beforeOutlier = True) # Maximize complexity heuristic, iteratively
 
-    print("\n--- Starting Embeddings BEFORE outlier removal ---\n", flush=True)
+    # Embeddings (UMAP + t-SNE)
+    print("\n--- Starting Embeddings ---\n", flush = True)
     run_embeddings(adata, condition_params)
 
+    # Bring to CPU for plotting
     rsc.get.anndata_to_CPU(adata)
 
+    # Save BEFORE plots
     plot_embeddings(
         adata,
-        save_dir=before_outlier_dir,
+        save_dir=os.path.join(save_dir, "before_outlier_removal"),
         file_labels=file_labels,
     )
 
+    
     # ============================
     # 2) OUTLIER REMOVAL
     # ============================
-    print("\n--- Running Outlier Detection ---\n", flush=True)
+
+    print("\n--- Running Outlier Detection ---\n")
 
     results_list, drop_cells = find_outliers(
         adata,
@@ -642,68 +542,57 @@ def run_before_after_embeddings(
         cov_cells_col="number_of_cells",
     )
 
-    print(f"Dropping {len(drop_cells)} outlier nuclei...", flush=True)
-
+    print(f"Dropping {len(drop_cells)} outlier nuclei...")
     adata = adata[~adata.obs_names.isin(drop_cells)].copy()
     adata = clear_graph_and_cluster_state(adata)
 
     # ============================
     # 3) AFTER OUTLIER REMOVAL
     # ============================
-    print("\n--- Running AFTER outlier removal ---\n", flush=True)
+
+    print("\n--- Running AFTER outlier removal ---\n")
 
     set_global_seeds(seed)
 
-    after_outlier_dir = os.path.join(save_dir, "after_outlier_removal")
-    os.makedirs(after_outlier_dir, exist_ok=True)
+    # Move filtered data back to GPU
+    rsc.get.anndata_to_GPU(adata)
 
-    adata = prepare_post_outlier_adata(
-        adata,
-        condition_params,
-        graph_parent_dir=after_outlier_dir
-    )
-    validate_post_outlier_adata(adata)
+    # PCA + neighbors + clustering
+    run_pca_and_neighbors(adata, condition_params)
+    run_clustering(adata, condition_params, save_dir=os.path.join(save_dir, "after_outlier_removal"), beforeOutlier = False)
 
-    print("\n--- Starting Clustering AFTER outlier removal ---\n", flush=True)
-    run_clustering(
-        adata,
-        condition_params,
-        save_dir=after_outlier_dir,
-        beforeOutlier=False
-    )
-
-    print("\n--- Starting Embeddings AFTER outlier removal ---\n", flush=True)
+    # Embeddings (UMAP + t-SNE)
     run_embeddings(adata, condition_params)
 
+    # Bring to CPU
     rsc.get.anndata_to_CPU(adata)
 
+    # Save AFTER plots
     plot_embeddings(
         adata,
-        save_dir=after_outlier_dir,
+        save_dir=os.path.join(save_dir, "after_outlier_removal"),
         file_labels=file_labels,
     )
-
-    # ============================
-    # 4) SAVE RESULTS
-    # ============================
     csv_dir = os.path.join(save_dir, "results_csv")
     os.makedirs(csv_dir, exist_ok=True)
 
     for i, df in enumerate(results_list):
         filename = os.path.join(csv_dir, f"result_{i+1}.csv")
         df.to_csv(filename, index=True)
-        print(f"Saved: {filename}", flush=True)
+        print(f"Saved: {filename}")
+
+
 
     cluster_qc_post = compute_cluster_qc(
-        adata,
-        cluster_key="leiden",
-        layer=None,
-    )
-    cluster_qc_post.to_csv(
-        os.path.join(save_dir, "cluster_qc_post_outlier_removal.csv")
+    adata,
+    cluster_key="leiden",
+    layer=None,  # or your scaled layer name if you use one
     )
 
+    cluster_qc_post.to_csv(os.path.join(save_dir, "cluster_qc_post_outlier_removal.csv"))
+
     return adata, results_list
+
 
 
 def mad(x: np.ndarray) -> float:
