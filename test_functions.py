@@ -525,7 +525,7 @@ def run_before_after_embeddings(
         file_labels=file_labels,
     )
 
-    
+    #return
     # ============================
     # 2) OUTLIER REMOVAL
     # ============================
@@ -1465,7 +1465,7 @@ def process_gene_batches(output_dir, datasets, gene_batches, gene_maps, Q_gpu, n
                 combined_batch.append(dataset_matrix)
 
         # Combine data across datasets
-        partial_sparse_array = cp.sparse.hstack(combined_batch).tocsr() # hstack returns coo format, we need to convert back. This is your batch across all datasets
+        partial_sparse_array = cpx_sparse.hstack(combined_batch).tocsr() # hstack returns coo format, we need to convert back. This is your batch across all datasets
         assert partial_sparse_array.shape[1] == total_nuclei
 
         # REMOVE LOW EXPR genes by calculating the mean expression level for each gene across all nuclei
