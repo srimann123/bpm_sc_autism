@@ -77,13 +77,23 @@ print("Total nuclei: ", total_nuclei, flush = True)
 covariates_df = test_functions.process_cov_files(condition_params["covariates_file"], nuclei_names_list)
 
 h5ad_path = condition_params.get("h5ad_file")
+
 if isinstance(h5ad_path, list):
+    print("This is a list", flush=True)
     h5ad_path = h5ad_path[0] if len(h5ad_path) > 0 else None
+
+if isinstance(h5ad_path, str):
+    h5ad_path = h5ad_path.strip()
+
 has_h5ad = (
     isinstance(h5ad_path, str)
-    and h5ad_path.strip() != ""
+    and h5ad_path != ""
     and h5ad_path.lower() != "nan"
 )
+
+print(h5ad_path, flush=True)
+print(has_h5ad, flush=True)
+
 
 if not has_h5ad:
 	gene_maps = [test_functions.build_gene_index_map(file, shared_genes) for file in condition_params["data_file"]]

@@ -1565,7 +1565,7 @@ def build_hvg_matrix(variable_gene_names, datasets, output_dir, gene_maps, total
             all_datasets.append(dataset_matrix)
 
 
-    refined_sparse_array = cp.sparse.hstack(all_datasets, format="csr", dtype=cp.float32)
+    refined_sparse_array = cpx_sparse.hstack(all_datasets, format="csr", dtype=cp.float32)
     print("after hstack:", type(refined_sparse_array), sparse_fmt(refined_sparse_array), flush=True)
     #refined_sparse_array = cp.sparse.hstack(all_datasets).tocsr()  # shape: (n_HVGs, total_nuclei)
 
