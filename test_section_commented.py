@@ -1,0 +1,216 @@
+# ============================================================
+# Single-cell analysis driver script
+# ------------------------------------------------------------
+# This script is the entry point for one run of the pipeline. It reads one
+# row from the conditions CSV, prepares or loads an AnnData object, creates
+# a run-specific output folder, and then calls the main before/after
+# clustering workflow in test_functions.py.
+# ============================================================
+
+print("Python script started now", flush=True)
+import time
+import sys
+import os
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+import scanpy as sc
+
+start = time.time()
+import test_functions
+print("Test_functions import: ", time.time() - start, flush=True)
+
+start = time.time()
+from anndata import AnnData
+print("anndata import: ", time.time() - start, flush=True)
+
+start = time.time()
+import rapids_singlecell as rsc
+print("rapids_singlecell import: ", time.time() - start, flush=True)
+
+start = time.time()
+import cupy as cp
+print("cupy import: ", time.time() - start, flush=True)
+
+start = time.time()
+import numpy as np
+print("numpy import: ", time.time() - start, flush=True)
+
+start = time.time()
+import pandas as pd
+print("pandas import: ", time.time() - start, flush=True)
+
+import cudf, cuml, cugraph
+import rapids_singlecell as rsc
+
+print("cudf:", cudf.__version__, flush=True)
+print("cuml:", cuml.__version__, flush=True)
+print("cugraph:", cugraph.__version__, flush=True)
+print("rapids-singlecell:", rsc.__version__, flush=True)
+
+
+#start = time.time()
+#from cupyx.scipy.sparse import csr_matrix
+#print("cupyx.scipy.sparse import: ", time.time() - start, flush=True)
+
+#end_time = time.time()
+#print("Total time spent for importing:", end_time - start_time)
+
+
+print("Started test.py", flush = True)
+
+# ============================================================
+# Read the run configuration
+# ------------------------------------------------------------
+# The script is designed for SLURM array-style execution: the CSV path and
+# row number are passed in from the command line, and that row determines
+# all paths, parameters, covariates, and analysis settings for this run.
+# ============================================================
+
+csv_path = sys.argv[1]
+row_num = int(sys.argv[2]) - 1 # SLURM_ARRAY_TASK_ID (1-based index)
+conditions = pd.read_csv(csv_path)
+row = conditions.iloc[row_num]
+condition_params = test_functions.parse_conditions(row)
+file_labels = test_functions.build_cluster_label(condition_params)
+
+
+print(file_labels["cluster_label"], flush=True)
+print(condition_params["data_file"])
+
+# ============================================================
+# Align input datasets and covariates
+# ------------------------------------------------------------
+# The raw count files may come from multiple datasets. This block finds
+# genes shared across all input files, collects nuclei IDs in the combined
+# order, and loads covariates in the same nuclei order so residualization
+# and downstream summaries line up correctly.
+# ============================================================
+
+result = test_functions.get_shared_genes(condition_params["data_file"]) # Genes that are shared genes, intersection across datasets
+shared_genes = result[0]
+nuclei_names_list = result[1]
+
+print("Shared genes count: ", len(shared_genes), flush = True)
+
+n_genes = len(shared_genes)
+total_nuclei = len(nuclei_names_list)
+
+print("Total genes: ", n_genes, flush = True)
+print("Total nuclei: ", total_nuclei, flush = True)
+
+covariates_df = test_functions.process_cov_files(condition_params["covariates_file"], nuclei_names_list)
+
+# ============================================================
+# Decide whether to load a precomputed H5AD or build one from raw files
+# ------------------------------------------------------------
+# If h5ad_file is provided, the script skips the raw matrix-building and
+# HVG-selection stage. If it is empty, blank, or nan, the script creates a
+# new AnnData object from the raw H5 files.
+# ============================================================
+
+h5ad_path = condition_params.get("h5ad_file")
+if isinstance(h5ad_path, list):
+    h5ad_path = h5ad_path[0] if len(h5ad_path) > 0 else None
+has_h5ad = (
+    isinstance(h5ad_path, str)
+    and h5ad_path.strip() != ""
+    and h5ad_path.lower() != "nan"
+)
+
+# ============================================================
+# Build AnnData from raw H5 files when no H5AD is supplied
+# ------------------------------------------------------------
+# This block builds gene index maps, splits shared genes into batches,
+# residualizes expression against covariates, selects HVGs, rebuilds the
+# final HVG-only matrix, and saves it as an H5AD for later reuse.
+# ============================================================
+
+if not has_h5ad:
+	gene_maps = [test_functions.build_gene_index_map(file, shared_genes) for file in condition_params["data_file"]]
+	print("Shared genes: ", len(shared_genes), flush = True)
+
+
+	gene_batches = [shared_genes[i:i + condition_params["batch_size"]] for i in range(0, len(shared_genes), condition_params["batch_size"])]
+
+	print("Starting variable genes function", flush = True)
+
+	cov_numeric_np = test_functions.factor2dummy_once(covariates_df, condition_params["covariates"]) # Added code for covariates residualization
+	Q_gpu = test_functions.compute_Q_on_gpu(cov_numeric_np, add_intercept=True) # # Added code for covariates residualization
+
+
+	variable_gene_names = test_functions.process_gene_batches(condition_params["output_dir"][0], condition_params["data_file"], gene_batches, gene_maps, Q_gpu, n_genes = n_genes, total_nuclei = total_nuclei, covariates_df = covariates_df, covariate_names = condition_params["covariates"], thresh = condition_params["exp_thresh"], n_top_genes = condition_params["n_variableGenes"], hvg_mad_threshold = condition_params["hvg_mad_thresh"])
+	#np.savetxt("variable_gene_names_new.txt", variable_gene_names, fmt='%s', delimiter='\n')
+	print(variable_gene_names[0:5], flush = True)
+
+	refined_sparse_array = test_functions.build_hvg_matrix(variable_gene_names, condition_params["data_file"], condition_params["output_dir"][0], gene_maps, total_nuclei, Q_gpu, clip_thres = 10)
+
+
+
+	# Convert CuPy sparse matrix back to CPU (scipy sparse CSR)
+	refined_sparse_array_cpu = refined_sparse_array.get()
+
+	adata = AnnData(X=refined_sparse_array_cpu.T.tocsr())
+
+	# Assign correct names
+	adata.obs_names = nuclei_names_list           # rows = nuclei
+	adata.var_names = variable_gene_names         # columns = HVGs
+
+
+	#"""
+
+	output_dir = condition_params["output_dir"][0]
+	out_path = os.path.join(output_dir, "sc_autism.h5ad")
+	adata.write(out_path) # This line needs to be commented out
+
+
+
+# ============================================================
+# Create run-specific outputs and save metadata
+# ------------------------------------------------------------
+# Outputs are nested by a parameter-based cluster label and a unique run ID.
+# Metadata is saved alongside plots/results so the exact settings for the
+# run can be recovered later.
+# ============================================================
+
+save_dir = os.path.join(condition_params["output_dir"][0], "plots", file_labels["cluster_label"], file_labels["run_id"])
+os.makedirs(save_dir, exist_ok=False)  # Create the folder if it doesn’t exist
+
+test_functions.save_run_metadata(save_dir, condition_params, file_labels)
+
+# 1) Read precomputed matrix (nuclei x HVGs) from H5AD ####### REMOVE THIS BLOCK OF CODE AFTER TESTING
+if not has_h5ad:
+    h5ad_path = out_path
+    print("Using default out_path", flush = True)
+# ============================================================
+# Load the AnnData object for analysis
+# ------------------------------------------------------------
+# At this point, h5ad_path points either to the user-provided H5AD or to
+# the H5AD just created from raw files. The loaded AnnData object is passed
+# into the before/after clustering workflow below.
+# ============================================================
+
+# ---------- LOAD DATA ----------
+print(f"Reading H5AD: {h5ad_path}", flush=True)
+adata = sc.read_h5ad(h5ad_path)
+
+
+
+# ============================================================
+# Run the main before/after outlier-removal workflow
+# ------------------------------------------------------------
+# The heavy analysis work happens inside test_functions.py: PCA, neighbors,
+# clustering, embeddings, outlier detection, filtering, rerunning the graph
+# pipeline, plotting, and writing result CSVs.
+# ============================================================
+
+adata_final, results_list = test_functions.run_before_after_embeddings(
+    adata=adata,
+    condition_params=condition_params,
+    save_dir=save_dir,
+    file_labels=file_labels,
+    covariates_df=covariates_df,
+    results_list=[],
+    mad_thres=condition_params.get("mad_thres")
+)
