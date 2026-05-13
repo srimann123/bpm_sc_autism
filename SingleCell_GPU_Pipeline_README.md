@@ -155,6 +155,54 @@ spread | UMAP spread | 1–2 |
 
 ---
 
+
+
+# Clustering-Only Mode (Precomputed HVG `.h5ad`)
+
+The pipeline supports a **clustering-only execution mode** using a precomputed HVG AnnData object.
+
+If the parameter:
+
+```
+h5ad_file
+```
+
+is provided in `conditions.csv`, the pipeline will:
+
+- skip HVG selection
+- skip HDF5 batch processing
+- skip HVG matrix reconstruction
+- directly load the `.h5ad`
+- perform only clustering and visualization
+
+This significantly accelerates experimentation by allowing users to repeatedly test:
+
+- PCA dimensions
+- neighbor graph size
+- Leiden resolution
+- UMAP parameters
+- tSNE parameters
+- outlier thresholds
+
+without rerunning the computationally expensive HVG pipeline.
+
+This is especially useful for:
+
+- clustering optimization
+- visualization tuning
+- parameter sweeps
+- downstream analysis iteration
+
+Example:
+
+```csv
+h5ad_file,/path/to/sc_autism.h5ad
+```
+
+Internally, the pipeline checks whether a valid `h5ad_file` exists. If present, the HVG-selection stage is bypassed and the AnnData object is loaded directly for clustering.
+
+---
+
 # Data Flow Through Pipeline
 
 | Stage | Format | Shape | Device |
